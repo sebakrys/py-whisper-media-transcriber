@@ -226,5 +226,6 @@ In directory mode you will get:
 
 ## License
 
-Choose a license that fits your project (e.g., MIT).
+MIT License
 
+Copyright (c) 2025 sebakrys
