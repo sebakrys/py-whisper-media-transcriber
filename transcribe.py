@@ -22,6 +22,65 @@ VIDEO_EXTENSIONS = {
 }
 
 
+import re
+from difflib import SequenceMatcher
+
+def _norm(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[^\w\sąćęłńóśźż]", "", s)
+    return s
+
+def dedupe_segments(
+    segments,
+    similarity: float = 0.93,
+    max_time_gap: float = 1.0,
+    max_repeat_run: int = 2,
+):
+    """
+    Usuwa (prawie) identyczne segmenty powtarzające się tuż po sobie.
+    max_time_gap: ile sekund między segmentami uznajemy za "to samo miejsce".
+    max_repeat_run: ile razy pozwalamy na powtórzenie zanim zaczniemy ucinać.
+    """
+    if not segments:
+        return segments
+
+    out = []
+    last_norm = None
+    last_end = None
+    repeat_run = 0
+
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+
+        # (opcjonalnie) odetnij śmieci na ciszy, jeśli segment ma te pola:
+        if seg.get("no_speech_prob", 0.0) > 0.7 and len(text) < 30:
+            continue
+        if seg.get("avg_logprob", 0.0) < -1.2 and len(text) < 30:
+            continue
+
+        n = _norm(text)
+        if last_norm is not None:
+            sim = SequenceMatcher(None, n, last_norm).ratio()
+            gap = (seg.get("start", 0.0) - (last_end or 0.0))
+
+            if sim >= similarity and gap <= max_time_gap:
+                repeat_run += 1
+                if repeat_run >= max_repeat_run:
+                    # ucinamy kolejne powtórzenia
+                    continue
+            else:
+                repeat_run = 0
+
+        out.append(seg)
+        last_norm = n
+        last_end = seg.get("end", last_end)
+
+    return out
+
+
 def is_media_file(path: Path) -> bool:
     """Sprawdza czy plik wygląda na wideo/audio po rozszerzeniu."""
     return path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
@@ -108,11 +167,13 @@ def transcribe_file(
         task="transcribe",
         fp16=(device == "cuda"),
         verbose=True,  # pokazuje segmenty + tekst w konsoli
+        condition_on_previous_text=False,
     )
     dt = perf_counter() - t0
     print(f"[INFO] Transkrypcja pliku zakończona w {dt:.1f} s")
 
     segments = result.get("segments", [])
+    segments = dedupe_segments(segments)
     text = build_lines_from_segments(segments, pause_threshold=pause_threshold)
 
     return text, total_duration_sec
